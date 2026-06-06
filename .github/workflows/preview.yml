@@ -1,0 +1,147 @@
+name: Grafana preview (Vercel Sandbox)
+
+# On-demand, time-boxed Grafana preview for a PR. A maintainer adds the
+# `preview` label; this workflow launches a Vercel Sandbox that builds and runs
+# the plugin (preview/Dockerfile) via Docker and exposes Grafana on a public
+# URL. The sandbox is ephemeral and auto-expires, so re-apply the label to
+# refresh. See preview/README.md for the model and one-time setup.
+#
+# Gating: applying labels requires write/triage permission, so external/forked
+# PRs cannot self-trigger. The `labeled` event also runs in the base-repo
+# context, giving GITHUB_TOKEN write scope (for the comment + status) even on
+# fork PRs. The PR's own (untrusted) code is only ever built inside the isolated
+# sandbox; the launcher we run here comes from the trusted base branch.
+
+on:
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  preview:
+    name: Launch preview
+    if: github.event.label.name == 'preview'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark pending
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- vercel-sandbox-preview -->';
+            const body = `${marker}\n### Grafana preview\n\n:hourglass_flowing_sand: Building preview... ([logs](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}))`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+            await github.rest.repos.createCommitStatus({
+              owner, repo,
+              sha: context.payload.pull_request.head.sha,
+              state: 'pending',
+              context: 'preview/grafana',
+              description: 'Building Grafana preview...',
+            });
+
+      # Trusted launcher: check out the PR's BASE branch, not the PR head. The
+      # PR's code is cloned and built inside the sandbox instead.
+      - name: Checkout base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Launch sandbox preview
+        id: launch
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          PR_HEAD_REPO_URL: ${{ github.event.pull_request.head.repo.clone_url }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npm run preview:launch
+
+      - name: Report success
+        if: success()
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_URL: ${{ steps.launch.outputs.PREVIEW_URL }}
+          TIMEOUT_MINUTES: ${{ steps.launch.outputs.TIMEOUT_MINUTES }}
+        with:
+          script: |
+            const marker = '<!-- vercel-sandbox-preview -->';
+            const url = process.env.PREVIEW_URL;
+            const minutes = process.env.TIMEOUT_MINUTES || '50';
+            const body = [
+              marker,
+              '### Grafana preview',
+              '',
+              `:white_check_mark: **[Open preview](${url})**`,
+              '',
+              `This is an ephemeral Vercel Sandbox. It auto-expires in about ${minutes} minutes; re-apply the \`preview\` label to refresh.`,
+              '',
+              `Built from commit ${context.payload.pull_request.head.sha.slice(0, 7)} · [logs](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+            await github.rest.repos.createCommitStatus({
+              owner, repo,
+              sha: context.payload.pull_request.head.sha,
+              state: 'success',
+              target_url: url,
+              context: 'preview/grafana',
+              description: `Preview live (~${minutes}m)`,
+            });
+
+      - name: Report failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- vercel-sandbox-preview -->';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${marker}\n### Grafana preview\n\n:x: Failed to launch preview. See the [workflow logs](${runUrl}). Re-apply the \`preview\` label to retry.`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+            await github.rest.repos.createCommitStatus({
+              owner, repo,
+              sha: context.payload.pull_request.head.sha,
+              state: 'failure',
+              target_url: runUrl,
+              context: 'preview/grafana',
+              description: 'Preview failed to launch',
+            });
