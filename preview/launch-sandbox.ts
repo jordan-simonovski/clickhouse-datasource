@@ -64,15 +64,20 @@ async function waitForHealthy(url: string): Promise<void> {
   const deadline = Date.now() + HEALTHCHECK_TIMEOUT_MS;
   const healthUrl = `${url}/api/health`;
   console.log(`\nWaiting for Grafana to become healthy at ${healthUrl} ...`);
+  let attempt = 0;
   while (Date.now() < deadline) {
+    attempt++;
     try {
-      const res = await fetch(healthUrl);
+      // Per-request timeout so a single stalled request can't hang the loop.
+      const res = await fetch(healthUrl, { signal: AbortSignal.timeout(10_000) });
+      console.log(`  attempt ${attempt}: HTTP ${res.status}`);
       if (res.ok) {
         console.log('Grafana is healthy.');
         return;
       }
-    } catch {
-      // Container/Grafana not up yet; keep polling.
+    } catch (err) {
+      // Container/Grafana not up yet (or request timed out); keep polling.
+      console.log(`  attempt ${attempt}: ${(err as Error).message}`);
     }
     await new Promise((resolve) => setTimeout(resolve, HEALTHCHECK_INTERVAL_MS));
   }
@@ -132,7 +137,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Exit explicitly on both paths: the sandbox SDK keeps keep-alive sockets open,
+// so the process would otherwise hang after the work is done. The sandbox itself
+// keeps running on Vercel independently of this process until its timeout.
+main()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
