@@ -40,15 +40,23 @@ function setOutput(name: string, value: string): void {
 
 async function run(sandbox: Sandbox, cmd: string, args: string[], opts: { sudo?: boolean } = {}): Promise<void> {
   console.log(`\n$ ${opts.sudo ? 'sudo ' : ''}${cmd} ${args.join(' ')}`);
-  const command = await sandbox.runCommand({
-    cmd,
-    args,
-    sudo: opts.sudo,
-    stdout: process.stdout,
-    stderr: process.stderr,
-  });
-  if (command.exitCode !== 0) {
-    throw new Error(`Command failed (exit ${command.exitCode}): ${cmd} ${args.join(' ')}`);
+  // Run detached and pull logs ourselves. In non-detached mode the SDK relies on
+  // a long-lived log stream to detect completion; if that stream drops (a
+  // transient runner<->Vercel blip) it throws StreamError ("stream_ended_early")
+  // even when the command is fine. Streaming logs best-effort and then awaiting
+  // wait() (which checks the command status, not the log stream) is resilient.
+  const command = await sandbox.runCommand({ cmd, args, sudo: opts.sudo, detached: true });
+  try {
+    for await (const log of command.logs()) {
+      const out = log.stream === 'stderr' ? process.stderr : process.stdout;
+      out.write(log.data);
+    }
+  } catch (err) {
+    console.warn(`\n[log stream ended early, falling back to status: ${(err as Error).message}]`);
+  }
+  const finished = await command.wait();
+  if (finished.exitCode !== 0) {
+    throw new Error(`Command failed (exit ${finished.exitCode}): ${cmd} ${args.join(' ')}`);
   }
 }
 
