@@ -7,10 +7,12 @@ name: Grafana preview (Vercel Sandbox)
 # refresh. See preview/README.md for the model and one-time setup.
 #
 # Gating: applying labels requires write/triage permission, so external/forked
-# PRs cannot self-trigger. The `labeled` event also runs in the base-repo
-# context, giving GITHUB_TOKEN write scope (for the comment + status) even on
-# fork PRs. The PR's own (untrusted) code is only ever built inside the isolated
-# sandbox; the launcher we run here comes from the trusted base branch.
+# PRs cannot self-trigger. This uses the `pull_request` trigger, so secrets and a
+# write-scoped GITHUB_TOKEN are only available to same-repo (maintainer) branches;
+# fork PRs get a read-only token and no secrets, so they cannot launch a preview.
+# Maintainers are therefore expected to push their branches to this repo. The PR's
+# code is trusted on that basis, and is additionally only ever built inside the
+# isolated sandbox microVM, never on the runner.
 
 on:
   pull_request:
@@ -54,12 +56,14 @@ jobs:
               description: 'Building Grafana preview...',
             });
 
-      # Trusted launcher: check out the PR's BASE branch, not the PR head. The
-      # PR's code is cloned and built inside the sandbox instead.
-      - name: Checkout base branch
+      # Check out the labeled PR's head so the launcher + preview:launch script
+      # come from the PR under review. Safe here because only same-repo
+      # (maintainer) branches receive secrets under `pull_request`. The PR's
+      # plugin code is still built inside the isolated sandbox, not on the runner.
+      - name: Checkout PR head
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.base.ref }}
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Setup Node

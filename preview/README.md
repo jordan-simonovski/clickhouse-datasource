@@ -39,7 +39,7 @@ spin up a fresh one. The workflow keeps a single sticky comment and a
 ```mermaid
 flowchart LR
   label["Maintainer adds 'preview' label"] --> gha["GitHub Actions"]
-  gha --> script["launch-sandbox.ts (trusted, base branch)"]
+  gha --> script["launch-sandbox.ts (from PR head)"]
   script --> create["Sandbox.create: clone PR head, expose port 3000"]
   create --> docker["sudo dnf install docker; start dockerd"]
   docker --> build["docker build -f preview/Dockerfile ."]
@@ -47,9 +47,12 @@ flowchart LR
   serve --> healthy["health check, then post URL + status"]
 ```
 
-Security note: the workflow checks out the PR's **base** branch to run the
-launcher (trusted code). The PR's own (potentially untrusted) code is only ever
-cloned and built **inside** the isolated sandbox microVM, never on the runner.
+Security note: the workflow uses the `pull_request` trigger, so secrets and a
+write-scoped token are only exposed to same-repo (maintainer) branches; fork PRs
+from external contributors get a read-only token and no secrets and therefore
+cannot launch a preview. Maintainers are expected to push branches to this repo.
+The PR's plugin code is built **inside** the isolated sandbox microVM, never on
+the runner.
 
 ## One-time setup
 
